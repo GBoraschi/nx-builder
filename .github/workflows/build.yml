@@ -8,6 +8,11 @@ on:
         required: true
         default: true
         type: boolean
+      pular_metal_tt:
+        description: 'Pular arquivo metal-tt (--gpu none)? Deixe desmarcado para manter otimizacao A19 Pro (g18p)'
+        required: true
+        default: false
+        type: boolean
 
 env:
   PIP_BREAK_SYSTEM_PACKAGES: "1"
@@ -15,7 +20,7 @@ env:
 jobs:
   build:
     runs-on: macos-15
-    timeout-minutes: 120
+    timeout-minutes: 360
     steps:
       - name: Clonar o repositorio NX2Apple
         run: git clone https://github.com/LNPANDY/NX2Apple.git repo
@@ -27,6 +32,12 @@ jobs:
           brew install --cask dotnet-sdk
           python3 -m pip install --break-system-packages lz4 capstone fonttools "backports.zstd; python_version < '3.14'" nsz cryptography
 
+      - name: Restaurar Cache de Shaders (evita recompilar 1h30m se rodar de novo)
+        uses: actions/cache@v4
+        with:
+          path: game_input/*_build/shader
+          key: nx2apple-shaders-v1
+
       - name: Baixar e extrair jogo.zip do Hugging Face
         env:
           GAME_URL: ${{ secrets.GAME_URL }}
@@ -36,13 +47,13 @@ jobs:
           aria2c -x 16 -s 16 --header="Authorization: Bearer $HF_TOKEN" "$GAME_URL" -o game.zip
           unzip -q game.zip -d game_input
           rm game.zip
-          find game_input -mindepth 2 -type f -exec mv -f {} game_input/ \;
+          find game_input -maxdepth 2 -mindepth 2 -type f -not -path "*/.*_build/*" -exec mv -f {} game_input/ \; || true
           echo "Arquivos na pasta game_input:"
           ls -lh game_input
 
       - name: Converter XCI para NSP (Python nativo) e gerar Slim IPA
         run: |
-          KEYS_PATH=$(find game_input -iname "prod.keys*" | head -n 1)
+          KEYS_PATH=$(find game_input -maxdepth 2 -iname "prod.keys*" | head -n 1)
           if [ -z "$KEYS_PATH" ]; then
             echo "ERRO: Arquivo prod.keys nao encontrado dentro do zip!"
             exit 1
@@ -51,7 +62,7 @@ jobs:
           echo "Usando arquivo de chaves: $KEYS_ABS"
 
           python3 - "$KEYS_ABS" << 'EOF'
-          import os, sys, glob, struct, re
+          import os, sys, glob, struct
           from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
           keys_path = sys.argv[1]
@@ -165,58 +176,33 @@ jobs:
               os.remove(xci_path)
           EOF
 
-          echo "Arquivos NSP prontos em game_input:"
-          ls -lh game_input
-
           cd repo
-          # Detecta o Title ID base (terminado em 000) para passar ao script caso nao seja Zelda BotW
-          BASE_TID=$(ls ../game_input/*.nsp 2>/dev/null | grep -oE '[0-9A-Fa-f]{13}000' | head -n 1 | tr '[:lower:]' '[:upper:]')
-          echo "Title ID Base detectado: $BASE_TID"
-
-          PKG_FLAG=""
-          if [ -n "$BASE_TID" ] && [ "$BASE_TID" != "01007EF00011E000" ]; then
-            # Procura no repositorio se existe um nome de pacote associado a esse Title ID
-            PKG_NAME=$(python3 -c "
-          import os, re, json
-          tid = '$BASE_TID'
-          for root, _, files in os.walk('.'):
-              for fn in files:
-                  if fn.endswith(('.py', '.json', '.tsv', '.toml')):
-                      p = os.path.join(root, fn)
-                      try:
-                          txt = open(p, errors='ignore').read()
-                          if tid.lower() in txt.lower():
-                              for line in txt.splitlines():
-                                  if tid.lower() in line.lower():
-                                      print(f'Match em {p}: {line.strip()}', file=__import__('sys').stderr)
-                                      m = re.search(r'[\"\x27]([a-z0-9_-]+)[\"\x27]\s*:', line)
-                                      if m and m.group(1).lower() != 'title_id':
-                                          print(m.group(1))
-                                          raise SystemExit
-                      except SystemExit:
-                          raise
-                      except Exception:
-                          pass
-          " | head -n 1)
-            if [ -n "$PKG_NAME" ]; then
-              echo "Pacote correspondente encontrado: $PKG_NAME"
-              PKG_FLAG="-p $PKG_NAME"
-            else
-              echo "Usando Title ID diretamente no parametro -p: $BASE_TID"
-              PKG_FLAG="-p $BASE_TID"
-            fi
+          GPU_FLAG=""
+          if [ "${{ inputs.pular_metal_tt }}" = "true" ]; then
+            GPU_FLAG="--gpu none"
           fi
 
-          python3 scripts/build_ipa_from_nsp.py ../game_input -k "$KEYS_ABS" $PKG_FLAG -o ../output_files/Game.ipa --keep-extracted --allow-other-metal
+          python3 scripts/build_ipa_from_nsp.py ../game_input -k "$KEYS_ABS" -o ../output_files/Game.ipa --keep-extracted --allow-other-metal $GPU_FLAG
+
+          # Remove os NSPs originais apos gerar o IPA para liberar espaco em disco para o RomFS
+          rm -f ../game_input/*.nsp
 
       - name: Empacotar RomFS em blocos de 200MB
         if: ${{ inputs.gerar_romfs == true }}
         run: |
           cd repo
-          ROMFS_DIR=$(find _build -type d \( -name "romfs" -o -name "rom" -o -name "content" \) | head -n 1)
+          echo "Procurando pasta de dados extraidos do jogo..."
+          ROMFS_DIR=$(find ../game_input _build -type d \( -name "romfs" -o -name "rom" -o -name "content" \) 2>/dev/null | head -n 1)
+          if [ -z "$ROMFS_DIR" ]; then
+            # No NX2Apple novo, os arquivos extraidos ficam na pasta de versao maior dentro de *_build/extract/v*
+            ROMFS_DIR=$(find ../game_input -path "*_build/extract/v*" -type d | sort -V | tail -n 1)
+          fi
           if [ -n "$ROMFS_DIR" ]; then
             echo "Empacotando RomFS encontrado em: $ROMFS_DIR"
             python3 dm/tools/romfs_arc.py pack "$ROMFS_DIR" ../output_files/romfs/romfs --shard-mib 200
+            rm -rf ../game_input/*_build/extract
+          else
+            echo "AVISO: Pasta RomFS nao localizada!"
           fi
 
       - name: Salvar IPA para download
