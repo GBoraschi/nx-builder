@@ -8,14 +8,10 @@ on:
         required: true
         default: true
         type: boolean
-      pular_metal_tt:
-        description: 'Pular arquivo metal-tt (--gpu none)? Deixe desmarcado para manter otimizacao A19 Pro (g18p)'
-        required: true
-        default: false
-        type: boolean
 
 env:
   PIP_BREAK_SYSTEM_PACKAGES: "1"
+  DM_PSO_GPUS: "none"
 
 jobs:
   build:
@@ -32,8 +28,9 @@ jobs:
           brew install --cask dotnet-sdk
           python3 -m pip install --break-system-packages lz4 capstone fonttools "backports.zstd; python_version < '3.14'" nsz cryptography
 
-      - name: Restaurar Cache de Shaders (evita recompilar 1h30m se rodar de novo)
-        uses: actions/cache@v4
+      - name: Restaurar Cache de Shaders
+        id: cache-shaders
+        uses: actions/cache/restore@v4
         with:
           path: game_input/*_build/shader
           key: nx2apple-shaders-v1
@@ -51,7 +48,7 @@ jobs:
           echo "Arquivos na pasta game_input:"
           ls -lh game_input
 
-      - name: Converter XCI para NSP (Python nativo) e gerar Slim IPA
+      - name: Converter XCI para NSP e gerar Slim IPA
         run: |
           KEYS_PATH=$(find game_input -maxdepth 2 -iname "prod.keys*" | head -n 1)
           if [ -z "$KEYS_PATH" ]; then
@@ -177,25 +174,27 @@ jobs:
           EOF
 
           cd repo
-          GPU_FLAG=""
-          if [ "${{ inputs.pular_metal_tt }}" = "true" ]; then
-            GPU_FLAG="--gpu none"
-          fi
+          python3 scripts/build_ipa_from_nsp.py ../game_input -k "$KEYS_ABS" -o ../output_files/Game.ipa --keep-extracted --allow-other-metal --gpu none
 
-          python3 scripts/build_ipa_from_nsp.py ../game_input -k "$KEYS_ABS" -o ../output_files/Game.ipa --keep-extracted --allow-other-metal $GPU_FLAG
-
-          # Remove os NSPs originais apos gerar o IPA para liberar espaco em disco para o RomFS
+          # Libera espaco removendo os NSPs brutos antes de empacotar o RomFS
           rm -f ../game_input/*.nsp
+
+      - name: Salvar Cache de Shaders (Mesmo se houver erro depois)
+        if: always() && steps.cache-shaders.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: game_input/*_build/shader
+          key: nx2apple-shaders-v1
 
       - name: Empacotar RomFS em blocos de 200MB
         if: ${{ inputs.gerar_romfs == true }}
         run: |
           cd repo
-          echo "Procurando pasta de dados extraidos do jogo..."
-          ROMFS_DIR=$(find ../game_input _build -type d \( -name "romfs" -o -name "rom" -o -name "content" \) 2>/dev/null | head -n 1)
+          echo "Estrutura extraida em game_input:"
+          find ../game_input/*_build/extract -maxdepth 2 || true
+          ROMFS_DIR=$(find ../game_input _build -type d \( -name "romfs" -o -name "rom" -o -name "content" \) 2>/dev/null | sort -V | tail -n 1)
           if [ -z "$ROMFS_DIR" ]; then
-            # No NX2Apple novo, os arquivos extraidos ficam na pasta de versao maior dentro de *_build/extract/v*
-            ROMFS_DIR=$(find ../game_input -path "*_build/extract/v*" -type d | sort -V | tail -n 1)
+            ROMFS_DIR=$(find ../game_input -path "*_build/extract/v*" -type d -maxdepth 3 | sort -V | tail -n 1)
           fi
           if [ -n "$ROMFS_DIR" ]; then
             echo "Empacotando RomFS encontrado em: $ROMFS_DIR"
