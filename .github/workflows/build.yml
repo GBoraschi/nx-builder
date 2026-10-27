@@ -4,10 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       gerar_romfs:
-        description: 'Gerar e enviar a pasta RomFS pela nuvem? (Desmarque se quiser gerar apenas o IPA rapido)'
+        description: 'Gerar e enviar a pasta RomFS pela nuvem?'
         required: true
         default: true
         type: boolean
+
+env:
+  PIP_BREAK_SYSTEM_PACKAGES: "1"
 
 jobs:
   build:
@@ -22,7 +25,7 @@ jobs:
           xcodebuild -downloadComponent MetalToolchain || true
           brew install xcodegen zstd spirv-cross glslang aria2
           brew install --cask dotnet-sdk
-          python3 -m pip install lz4 capstone fonttools backports.zstd nsz
+          python3 -m pip install --break-system-packages lz4 capstone fonttools "backports.zstd; python_version < '3.14'" nsz
 
       - name: Baixar e extrair jogo.zip do Hugging Face
         env:
@@ -31,18 +34,22 @@ jobs:
         run: |
           mkdir -p game_input output_files/romfs
           aria2c -x 16 -s 16 --header="Authorization: Bearer $HF_TOKEN" "$GAME_URL" -o game.zip
+          ls -lh game.zip
           unzip -q game.zip -d game_input
           rm game.zip
+          echo "Arquivos encontrados dentro do zip:"
+          find game_input -maxdepth 3
 
-      - name: Converter NSP para Slim IPA
+      - name: Converter Jogo para Slim IPA
         run: |
           cd repo
-          KEYS_PATH=$(find ../game_input -name "prod.keys" | head -n 1)
+          KEYS_PATH=$(find ../game_input -iname "prod.keys*" | head -n 1)
           if [ -z "$KEYS_PATH" ]; then
-            echo "Erro: prod.keys nao encontrado dentro do zip!"
+            echo "ERRO: Arquivo prod.keys nao encontrado dentro do zip!"
             exit 1
           fi
-          python3 scripts/build_ipa_from_nsp.py ../game_input -k "$KEYS_PATH" -o ../output_files/Game.ipa
+          echo "Usando arquivo de chaves: $KEYS_PATH"
+          python3 scripts/build_ipa_from_nsp.py ../game_input -k "$KEYS_PATH" -o ../output_files/Game.ipa --no-romfs
 
       - name: Empacotar RomFS em blocos de 200MB
         if: ${{ inputs.gerar_romfs == true }}
