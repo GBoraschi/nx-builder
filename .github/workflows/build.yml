@@ -34,22 +34,47 @@ jobs:
         run: |
           mkdir -p game_input output_files/romfs
           aria2c -x 16 -s 16 --header="Authorization: Bearer $HF_TOKEN" "$GAME_URL" -o game.zip
-          ls -lh game.zip
           unzip -q game.zip -d game_input
           rm game.zip
-          echo "Arquivos encontrados dentro do zip:"
-          find game_input -maxdepth 3
+          
+          # Move todos os arquivos de subpastas para a raiz de game_input
+          find game_input -mindepth 2 -type f -exec mv -f {} game_input/ \;
+          
+          echo "Arquivos na pasta game_input:"
+          ls -lh game_input
 
-      - name: Converter Jogo para Slim IPA
+      - name: Converter XCI para NSP (se necessario) e gerar Slim IPA
         run: |
-          cd repo
-          KEYS_PATH=$(find ../game_input -iname "prod.keys*" | head -n 1)
+          KEYS_PATH=$(find game_input -iname "prod.keys*" | head -n 1)
           if [ -z "$KEYS_PATH" ]; then
             echo "ERRO: Arquivo prod.keys nao encontrado dentro do zip!"
             exit 1
           fi
-          echo "Usando arquivo de chaves: $KEYS_PATH"
-          python3 scripts/build_ipa_from_nsp.py ../game_input -k "$KEYS_PATH" -o ../output_files/Game.ipa --keep-extracted --allow-other-metal
+          KEYS_ABS=$(cd "$(dirname "$KEYS_PATH")" && pwd)/$(basename "$KEYS_PATH")
+          echo "Usando arquivo de chaves: $KEYS_ABS"
+
+          # Se houver arquivo .xci, compila o 4nxci e converte para .nsp automaticamente
+          shopt -s nullglob nocaseglob
+          XCI_FILES=(game_input/*.xci)
+          if [ ${#XCI_FILES[@]} -gt 0 ]; then
+            echo "Arquivo XCI detectado! Convertendo para NSP..."
+            git clone --depth 1 https://github.com/The-4n/4nxci.git /tmp/4nxci
+            cd /tmp/4nxci
+            cp config.mk.template config.mk
+            make -j4
+            cd -
+            mkdir -p /tmp/xci_temp
+            for xci in "${XCI_FILES[@]}"; do
+              /tmp/4nxci/4nxci -k "$KEYS_ABS" -o game_input -t /tmp/xci_temp "$xci"
+              rm -f "$xci"
+            done
+            rm -rf /tmp/xci_temp
+            echo "Arquivos apos conversao XCI -> NSP:"
+            ls -lh game_input
+          fi
+
+          cd repo
+          python3 scripts/build_ipa_from_nsp.py ../game_input -k "$KEYS_ABS" -o ../output_files/Game.ipa --keep-extracted --allow-other-metal
 
       - name: Empacotar RomFS em blocos de 200MB
         if: ${{ inputs.gerar_romfs == true }}
