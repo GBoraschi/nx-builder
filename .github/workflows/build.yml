@@ -49,14 +49,15 @@ jobs:
             exit 1
           fi
           echo "Usando arquivo de chaves: $KEYS_PATH"
-          python3 scripts/build_ipa_from_nsp.py ../game_input -k "$KEYS_PATH" -o ../output_files/Game.ipa --no-romfs
+          python3 scripts/build_ipa_from_nsp.py ../game_input -k "$KEYS_PATH" -o ../output_files/Game.ipa --keep-extracted --allow-other-metal
 
       - name: Empacotar RomFS em blocos de 200MB
         if: ${{ inputs.gerar_romfs == true }}
         run: |
           cd repo
-          ROMFS_DIR=$(find _build/extract -type d \( -name "romfs" -o -name "rom" -o -name "content" \) | head -n 1)
+          ROMFS_DIR=$(find _build -type d \( -name "romfs" -o -name "rom" -o -name "content" \) | head -n 1)
           if [ -n "$ROMFS_DIR" ]; then
+            echo "Empacotando RomFS encontrado em: $ROMFS_DIR"
             python3 dm/tools/romfs_arc.py pack "$ROMFS_DIR" ../output_files/romfs/romfs --shard-mib 200
           fi
 
