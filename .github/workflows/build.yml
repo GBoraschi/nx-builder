@@ -1,0 +1,67 @@
+name: Compilar NX2Apple IPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      gerar_romfs:
+        description: 'Gerar e enviar a pasta RomFS pela nuvem? (Desmarque se quiser gerar apenas o IPA rapido)'
+        required: true
+        default: true
+        type: boolean
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 120
+    steps:
+      - name: Clonar o repositorio NX2Apple
+        run: git clone https://github.com/LNPANDY/NX2Apple.git repo
+
+      - name: Instalar dependencias e Metal Toolchain no Mac
+        run: |
+          xcodebuild -downloadComponent MetalToolchain || true
+          brew install xcodegen zstd spirv-cross glslang aria2
+          brew install --cask dotnet-sdk
+          python3 -m pip install lz4 capstone fonttools backports.zstd nsz
+
+      - name: Baixar e extrair jogo.zip do Hugging Face
+        env:
+          GAME_URL: ${{ secrets.GAME_URL }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          mkdir -p game_input output_files/romfs
+          aria2c -x 16 -s 16 --header="Authorization: Bearer $HF_TOKEN" "$GAME_URL" -o game.zip
+          unzip -q game.zip -d game_input
+          rm game.zip
+
+      - name: Converter NSP para Slim IPA
+        run: |
+          cd repo
+          KEYS_PATH=$(find ../game_input -name "prod.keys" | head -n 1)
+          if [ -z "$KEYS_PATH" ]; then
+            echo "Erro: prod.keys nao encontrado dentro do zip!"
+            exit 1
+          fi
+          python3 scripts/build_ipa_from_nsp.py ../game_input -k "$KEYS_PATH" -o ../output_files/Game.ipa
+
+      - name: Empacotar RomFS em blocos de 200MB
+        if: ${{ inputs.gerar_romfs == true }}
+        run: |
+          cd repo
+          ROMFS_DIR=$(find _build/extract -type d \( -name "romfs" -o -name "rom" -o -name "content" \) | head -n 1)
+          if [ -n "$ROMFS_DIR" ]; then
+            python3 dm/tools/romfs_arc.py pack "$ROMFS_DIR" ../output_files/romfs/romfs --shard-mib 200
+          fi
+
+      - name: Salvar IPA para download
+        uses: actions/upload-artifact@v4
+        with:
+          name: NX2Apple-Slim-IPA
+          path: output_files/Game.ipa
+
+      - name: Salvar RomFS para download
+        if: ${{ inputs.gerar_romfs == true }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: NX2Apple-RomFS
+          path: output_files/romfs/
