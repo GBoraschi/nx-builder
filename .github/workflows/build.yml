@@ -18,26 +18,35 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 360
     steps:
-      - name: Clonar NX2Apple, corrigir SwiftUI e destravar limite de disco
+      - name: Clonar NX2Apple e aplicar correcoes para Xcode do GitHub
         run: |
           git clone https://github.com/LNPANDY/NX2Apple.git repo
           
-          # Substitui estilos exclusivos do Xcode 26 pelos equivalentes do Xcode 16
+          # 1. Corrige estilos SwiftUI exclusivos do Xcode 26
           sed -i '' 's/\.glassProminent/.borderedProminent/g' repo/dm/ios/Sources/Launcher.swift
           sed -i '' 's/\.buttonStyle(\.glass)/.buttonStyle(.bordered)/g' repo/dm/ios/Sources/Launcher.swift
           
-          # Altera apenas a verificacao de "21 GB free" sem afetar outros arquivos
+          # 2. Substitui -mcpu=apple-a18 por apple-a17 e desativa trava de 21 GB em todo o repositorio
           python3 - << 'EOF'
           import os, re
-          for root, _, files in os.walk("repo"):
+          for root, dirs, files in os.walk("repo"):
+              if ".git" in dirs:
+                  dirs.remove(".git")
               for fn in files:
-                  if fn.endswith((".py", ".sh")):
-                      p = os.path.join(root, fn)
-                      txt = open(p, "r", encoding="utf-8", errors="ignore").read()
-                      if "GB free" in txt or "less than" in txt:
-                          new_txt = re.sub(r'\b21\b', '1', txt)
-                          open(p, "w", encoding="utf-8").write(new_txt)
-                          print("Trava de espaco em disco desativada em:", p)
+                  p = os.path.join(root, fn)
+                  try:
+                      txt = open(p, "r", encoding="utf-8").read()
+                  except Exception:
+                      continue
+                  orig = txt
+                  if "apple-a18" in txt:
+                      txt = txt.replace("apple-a18", "apple-a17")
+                      print("Substituido apple-a18 -> apple-a17 em:", p)
+                  if "GB free" in txt or "less than" in txt:
+                      txt = re.sub(r'\b21\b', '1', txt)
+                      print("Trava de 21 GB desativada em:", p)
+                  if txt != orig:
+                      open(p, "w", encoding="utf-8").write(txt)
           EOF
 
       - name: Instalar dependencias (Preservando o iOS SDK do Xcode)
@@ -196,13 +205,16 @@ jobs:
               os.remove(xci_path)
           EOF
 
-          # Remove o update antigo do XCI caso o update novo v1114112 ja esteja na pasta
           if ls game_input/*v1114112*.nsp 1> /dev/null 2>&1; then
             rm -f "game_input/01007EF00011E800[v65536].nsp"
           fi
 
           cd repo
-          python3 scripts/build_ipa_from_nsp.py ../game_input -k "$KEYS_ABS" -o ../output_files/Game.ipa --keep-extracted --allow-other-metal --gpu none
+          if ! python3 scripts/build_ipa_from_nsp.py ../game_input -k "$KEYS_ABS" -o ../output_files/Game.ipa --keep-extracted --allow-other-metal --gpu none; then
+            echo "=== ULTIMAS 80 LINHAS DO LOG DO XCODEBUILD ==="
+            tail -n 80 ../game_input/*_build/ipa/build/ios/pkg/build.log || true
+            exit 1
+          fi
           rm -f ../game_input/*.nsp
 
       - name: Salvar Cache de Shaders
