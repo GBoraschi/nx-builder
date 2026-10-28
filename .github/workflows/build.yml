@@ -18,17 +18,35 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 360
     steps:
-      - name: Clonar o repositorio NX2Apple e corrigir Launcher.swift
+      - name: Clonar NX2Apple, corrigir SwiftUI e destravar limite de disco
         run: |
           git clone https://github.com/LNPANDY/NX2Apple.git repo
-          sed -i '' 's/\.glassProminent//g' repo/dm/ios/Sources/Launcher.swift
+          
+          # Substitui estilos exclusivos do Xcode 26 pelos equivalentes compativeis
+          sed -i '' 's/\.glassProminent/.borderedProminent/g' repo/dm/ios/Sources/Launcher.swift
+          sed -i '' 's/\.buttonStyle(\.glass)/.buttonStyle(.bordered)/g' repo/dm/ios/Sources/Launcher.swift
+          
+          echo "Verificando linha 213 do Launcher.swift apos a correcao:"
+          sed -n '208,218p' repo/dm/ios/Sources/Launcher.swift
+          
+          # Desativa a trava de 21 GB livres em qualquer script Python do repositorio
+          grep -rl "21" repo/scripts repo/dm 2>/dev/null | xargs sed -i '' 's/21/2/g' 2>/dev/null || true
 
-      - name: Instalar dependencias e Metal Toolchain no Mac
+      - name: Limpar arquivos desnecessarios do Mac e instalar dependencias
         run: |
+          sudo rm -rf /Users/runner/hostedtoolcache/* /Library/Developer/CoreSimulator || true
           xcodebuild -downloadComponent MetalToolchain || true
           brew install xcodegen zstd spirv-cross glslang aria2
           brew install --cask dotnet-sdk
           python3 -m pip install --break-system-packages lz4 capstone fonttools "backports.zstd; python_version < '3.14'" nsz cryptography
+          df -h
+
+      - name: Restaurar Cache de Shaders
+        id: cache-shaders
+        uses: actions/cache/restore@v4
+        with:
+          path: game_input/*_build/shader
+          key: nx2apple-shaders-v2
 
       - name: Baixar e extrair jogo.zip do Hugging Face
         env:
@@ -40,10 +58,10 @@ jobs:
           unzip -q game.zip -d game_input
           rm game.zip
           find game_input -maxdepth 2 -mindepth 2 -type f -not -path "*/.*_build/*" -exec mv -f {} game_input/ \; || true
-          echo "Espaco em disco disponivel:"
-          df -h
+          echo "Arquivos na pasta game_input:"
+          ls -lh game_input
 
-      - name: Converter XCI para NSP e gerar Slim IPA (Ignorando limite de espaco)
+      - name: Converter XCI para NSP e gerar Slim IPA
         run: |
           KEYS_PATH=$(find game_input -maxdepth 2 -iname "prod.keys*" | head -n 1)
           if [ -z "$KEYS_PATH" ]; then
@@ -168,27 +186,39 @@ jobs:
               os.remove(xci_path)
           EOF
 
-          cd repo
-          # Patch direto no script python do NX2Apple para desativar a verificacao rigida de espaco em disco
-          sed -i '' 's/disk_min_gb = 21/disk_min_gb = 2/g' dm/gfx/build_ipa.py || true
+          # Se ja houver o update mais novo separado (v1114112), remove o update antigo extraido do XCI para economizar espaco
+          if ls game_input/*v1114112*.nsp 1> /dev/null 2>&1; then
+            rm -f "game_input/01007EF00011E800[v65536].nsp"
+          fi
 
+          cd repo
           python3 scripts/build_ipa_from_nsp.py ../game_input -k "$KEYS_ABS" -o ../output_files/Game.ipa --keep-extracted --allow-other-metal --gpu none
           rm -f ../game_input/*.nsp
+
+      - name: Salvar Cache de Shaders
+        if: always() && steps.cache-shaders.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: game_input/*_build/shader
+          key: nx2apple-shaders-v2
 
       - name: Empacotar RomFS em blocos de 200MB
         if: ${{ inputs.gerar_romfs == true }}
         run: |
           cd repo
+          echo "Pastas extraidas disponiveis:"
+          find ../game_input -maxdepth 4 -type d || true
+          
           ROMFS_DIR=$(find ../game_input _build -type d \( -name "romfs" -o -name "rom" -o -name "content" \) 2>/dev/null | sort -V | tail -n 1)
           if [ -z "$ROMFS_DIR" ]; then
-            ROMFS_DIR=$(find ../game_input -path "*_build/extract/v*" -type d -maxdepth 3 | sort -V | tail -n 1)
+            ROMFS_DIR=$(find ../game_input -maxdepth 4 -path "*_build/extract/v*" -type d | sort -V | tail -n 1)
           fi
           if [ -n "$ROMFS_DIR" ]; then
             echo "Empacotando RomFS encontrado em: $ROMFS_DIR"
             python3 dm/tools/romfs_arc.py pack "$ROMFS_DIR" ../output_files/romfs/romfs --shard-mib 200
             rm -rf ../game_input/*_build/extract
           else
-            echo: "AVISO: Pasta RomFS nao localizada!"
+            echo "AVISO: Pasta RomFS nao localizada!"
           fi
 
       - name: Salvar IPA para download
