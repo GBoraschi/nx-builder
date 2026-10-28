@@ -15,18 +15,14 @@ env:
 
 jobs:
   build:
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 360
     steps:
-      - name: Clonar NX2Apple e aplicar correcoes para Xcode do GitHub
+      - name: Clonar NX2Apple e desativar trava de 21 GB
         run: |
           git clone https://github.com/LNPANDY/NX2Apple.git repo
           
-          # 1. Corrige estilos SwiftUI exclusivos do Xcode 26
-          sed -i '' 's/\.glassProminent/.borderedProminent/g' repo/dm/ios/Sources/Launcher.swift
-          sed -i '' 's/\.buttonStyle(\.glass)/.buttonStyle(.bordered)/g' repo/dm/ios/Sources/Launcher.swift
-          
-          # 2. Substitui -mcpu=apple-a18 por apple-a17 e desativa trava de 21 GB em todo o repositorio
+          # Desativa trava de 21 GB em todo o repositorio para caber no disco do runner
           python3 - << 'EOF'
           import os, re
           for root, dirs, files in os.walk("repo"):
@@ -39,9 +35,6 @@ jobs:
                   except Exception:
                       continue
                   orig = txt
-                  if "apple-a18" in txt:
-                      txt = txt.replace("apple-a18", "apple-a17")
-                      print("Substituido apple-a18 -> apple-a17 em:", p)
                   if "GB free" in txt or "less than" in txt:
                       txt = re.sub(r'\b21\b', '1', txt)
                       print("Trava de 21 GB desativada em:", p)
@@ -49,9 +42,10 @@ jobs:
                       open(p, "w", encoding="utf-8").write(txt)
           EOF
 
-      - name: Instalar dependencias (Preservando o iOS SDK do Xcode)
+      - name: Instalar dependencias (Preservando o iOS SDK do Xcode 26)
         run: |
           sudo rm -rf /Users/runner/hostedtoolcache/* || true
+          xcodebuild -version
           xcodebuild -downloadComponent MetalToolchain || true
           brew install xcodegen zstd spirv-cross glslang aria2
           brew install --cask dotnet-sdk
