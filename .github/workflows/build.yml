@@ -18,8 +18,10 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 360
     steps:
-      - name: Clonar o repositorio NX2Apple
-        run: git clone https://github.com/LNPANDY/NX2Apple.git repo
+      - name: Clonar o repositorio NX2Apple e corrigir Launcher.swift
+        run: |
+          git clone https://github.com/LNPANDY/NX2Apple.git repo
+          sed -i '' 's/\.glassProminent//g' repo/dm/ios/Sources/Launcher.swift
 
       - name: Instalar dependencias e Metal Toolchain no Mac
         run: |
@@ -28,7 +30,7 @@ jobs:
           brew install --cask dotnet-sdk
           python3 -m pip install --break-system-packages lz4 capstone fonttools "backports.zstd; python_version < '3.14'" nsz cryptography
 
-      - name: Restaurar Cache de Shaders
+      - name: Restaurar Cache de Shaders (Vai pular a compilacao de 1h30m!)
         id: cache-shaders
         uses: actions/cache/restore@v4
         with:
@@ -175,11 +177,9 @@ jobs:
 
           cd repo
           python3 scripts/build_ipa_from_nsp.py ../game_input -k "$KEYS_ABS" -o ../output_files/Game.ipa --keep-extracted --allow-other-metal --gpu none
-
-          # Libera espaco removendo os NSPs brutos antes de empacotar o RomFS
           rm -f ../game_input/*.nsp
 
-      - name: Salvar Cache de Shaders (Mesmo se houver erro depois)
+      - name: Salvar Cache de Shaders
         if: always() && steps.cache-shaders.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
@@ -190,8 +190,6 @@ jobs:
         if: ${{ inputs.gerar_romfs == true }}
         run: |
           cd repo
-          echo "Estrutura extraida em game_input:"
-          find ../game_input/*_build/extract -maxdepth 2 || true
           ROMFS_DIR=$(find ../game_input _build -type d \( -name "romfs" -o -name "rom" -o -name "content" \) 2>/dev/null | sort -V | tail -n 1)
           if [ -z "$ROMFS_DIR" ]; then
             ROMFS_DIR=$(find ../game_input -path "*_build/extract/v*" -type d -maxdepth 3 | sort -V | tail -n 1)
