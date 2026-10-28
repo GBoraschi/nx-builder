@@ -22,31 +22,32 @@ jobs:
         run: |
           git clone https://github.com/LNPANDY/NX2Apple.git repo
           
-          # Substitui estilos exclusivos do Xcode 26 pelos equivalentes compativeis
+          # Substitui estilos exclusivos do Xcode 26 pelos equivalentes do Xcode 16
           sed -i '' 's/\.glassProminent/.borderedProminent/g' repo/dm/ios/Sources/Launcher.swift
           sed -i '' 's/\.buttonStyle(\.glass)/.buttonStyle(.bordered)/g' repo/dm/ios/Sources/Launcher.swift
           
-          echo "Verificando linha 213 do Launcher.swift apos a correcao:"
-          sed -n '208,218p' repo/dm/ios/Sources/Launcher.swift
-          
-          # Desativa a trava de 21 GB livres em qualquer script Python do repositorio
-          grep -rl "21" repo/scripts repo/dm 2>/dev/null | xargs sed -i '' 's/21/2/g' 2>/dev/null || true
+          # Altera apenas a verificacao de "21 GB free" sem afetar outros arquivos
+          python3 - << 'EOF'
+          import os, re
+          for root, _, files in os.walk("repo"):
+              for fn in files:
+                  if fn.endswith((".py", ".sh")):
+                      p = os.path.join(root, fn)
+                      txt = open(p, "r", encoding="utf-8", errors="ignore").read()
+                      if "GB free" in txt or "less than" in txt:
+                          new_txt = re.sub(r'\b21\b', '1', txt)
+                          open(p, "w", encoding="utf-8").write(new_txt)
+                          print("Trava de espaco em disco desativada em:", p)
+          EOF
 
-      - name: Limpar arquivos desnecessarios do Mac e instalar dependencias
+      - name: Instalar dependencias (Preservando o iOS SDK do Xcode)
         run: |
-          sudo rm -rf /Users/runner/hostedtoolcache/* /Library/Developer/CoreSimulator || true
+          sudo rm -rf /Users/runner/hostedtoolcache/* || true
           xcodebuild -downloadComponent MetalToolchain || true
           brew install xcodegen zstd spirv-cross glslang aria2
           brew install --cask dotnet-sdk
           python3 -m pip install --break-system-packages lz4 capstone fonttools "backports.zstd; python_version < '3.14'" nsz cryptography
           df -h
-
-      - name: Restaurar Cache de Shaders
-        id: cache-shaders
-        uses: actions/cache/restore@v4
-        with:
-          path: game_input/*_build/shader
-          key: nx2apple-shaders-v2
 
       - name: Baixar e extrair jogo.zip do Hugging Face
         env:
@@ -57,9 +58,18 @@ jobs:
           aria2c -x 16 -s 16 --header="Authorization: Bearer $HF_TOKEN" "$GAME_URL" -o game.zip
           unzip -q game.zip -d game_input
           rm game.zip
-          find game_input -maxdepth 2 -mindepth 2 -type f -not -path "*/.*_build/*" -exec mv -f {} game_input/ \; || true
+          find game_input -maxdepth 2 -mindepth 2 -type f -exec mv -f {} game_input/ \; || true
           echo "Arquivos na pasta game_input:"
           ls -lh game_input
+
+      - name: Restaurar Cache de Shaders (nx2apple-shaders-v2)
+        id: cache-shaders
+        uses: actions/cache/restore@v4
+        with:
+          path: game_input/*_build/shader
+          key: nx2apple-shaders-v2
+          restore-keys: |
+            nx2apple-shaders-
 
       - name: Converter XCI para NSP e gerar Slim IPA
         run: |
@@ -186,7 +196,7 @@ jobs:
               os.remove(xci_path)
           EOF
 
-          # Se ja houver o update mais novo separado (v1114112), remove o update antigo extraido do XCI para economizar espaco
+          # Remove o update antigo do XCI caso o update novo v1114112 ja esteja na pasta
           if ls game_input/*v1114112*.nsp 1> /dev/null 2>&1; then
             rm -f "game_input/01007EF00011E800[v65536].nsp"
           fi
@@ -206,9 +216,6 @@ jobs:
         if: ${{ inputs.gerar_romfs == true }}
         run: |
           cd repo
-          echo "Pastas extraidas disponiveis:"
-          find ../game_input -maxdepth 4 -type d || true
-          
           ROMFS_DIR=$(find ../game_input _build -type d \( -name "romfs" -o -name "rom" -o -name "content" \) 2>/dev/null | sort -V | tail -n 1)
           if [ -z "$ROMFS_DIR" ]; then
             ROMFS_DIR=$(find ../game_input -maxdepth 4 -path "*_build/extract/v*" -type d | sort -V | tail -n 1)
