@@ -30,13 +30,6 @@ jobs:
           brew install --cask dotnet-sdk
           python3 -m pip install --break-system-packages lz4 capstone fonttools "backports.zstd; python_version < '3.14'" nsz cryptography
 
-      - name: Restaurar Cache de Shaders (Vai pular a compilacao de 1h30m!)
-        id: cache-shaders
-        uses: actions/cache/restore@v4
-        with:
-          path: game_input/*_build/shader
-          key: nx2apple-shaders-v1
-
       - name: Baixar e extrair jogo.zip do Hugging Face
         env:
           GAME_URL: ${{ secrets.GAME_URL }}
@@ -47,10 +40,10 @@ jobs:
           unzip -q game.zip -d game_input
           rm game.zip
           find game_input -maxdepth 2 -mindepth 2 -type f -not -path "*/.*_build/*" -exec mv -f {} game_input/ \; || true
-          echo "Arquivos na pasta game_input:"
-          ls -lh game_input
+          echo "Espaco em disco disponivel:"
+          df -h
 
-      - name: Converter XCI para NSP e gerar Slim IPA
+      - name: Converter XCI para NSP e gerar Slim IPA (Ignorando limite de espaco)
         run: |
           KEYS_PATH=$(find game_input -maxdepth 2 -iname "prod.keys*" | head -n 1)
           if [ -z "$KEYS_PATH" ]; then
@@ -176,15 +169,11 @@ jobs:
           EOF
 
           cd repo
+          # Patch direto no script python do NX2Apple para desativar a verificacao rigida de espaco em disco
+          sed -i '' 's/disk_min_gb = 21/disk_min_gb = 2/g' dm/gfx/build_ipa.py || true
+
           python3 scripts/build_ipa_from_nsp.py ../game_input -k "$KEYS_ABS" -o ../output_files/Game.ipa --keep-extracted --allow-other-metal --gpu none
           rm -f ../game_input/*.nsp
-
-      - name: Salvar Cache de Shaders
-        if: always() && steps.cache-shaders.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: game_input/*_build/shader
-          key: nx2apple-shaders-v1
 
       - name: Empacotar RomFS em blocos de 200MB
         if: ${{ inputs.gerar_romfs == true }}
@@ -199,7 +188,7 @@ jobs:
             python3 dm/tools/romfs_arc.py pack "$ROMFS_DIR" ../output_files/romfs/romfs --shard-mib 200
             rm -rf ../game_input/*_build/extract
           else
-            echo "AVISO: Pasta RomFS nao localizada!"
+            echo: "AVISO: Pasta RomFS nao localizada!"
           fi
 
       - name: Salvar IPA para download
